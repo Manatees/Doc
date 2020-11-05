@@ -76,7 +76,7 @@ Vue 实现了一套内容分发的API，将 `<slot>` 元素作为承载分发内
 
 该插槽可以访问与模板其余部分相同的实例 property ，即相同的作用域。不能访问 `<todo-button>` 的作用域
 
-<img src="G:\Doc\Vue3\guide\imgs\slot.png" alt="slot" style="zoom:67%;" />
+<img src=".\imgs\slot.png" alt="slot" style="zoom:67%;" />
 
 > 父级模板里的所有内容都是在父级作用域中编译的，
 >
@@ -234,7 +234,7 @@ app.comonent('todo-list', {
 
 > 在这个例子中，我们选择将包含所有插槽prop的对象命名为 slotProps ，但你也可 以使用任意你喜欢的名字。
 
-<img src="G:\Doc\Vue3\guide\imgs\scoped-slot.png" alt="scoped-slot" style="zoom:67%;" />
+<img src=".\imgs\scoped-slot.png" alt="scoped-slot" style="zoom:67%;" />
 
 ### 独占默认插槽的缩写语法
 
