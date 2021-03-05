@@ -203,3 +203,290 @@ protected boolean removeEldestEntry(Map.Entry<K,V> eldest) {
 最后一点是关于函数接口在API 中的使用。不要在相同的参数位置，提供不同的函数接口来进行多次重载的方法，否则可能在客户端导致歧义。这不仅仅是理论上的问题。比如 `ExecutorService` 的 `submit` 方法就可能带有`Callable<T>`或者 `Runnable` ，并且还可以编写一个客户端程序，要求进行一次转换，以显示正确的重载(详见第 52 条) 。避免这个问题的最简单方式是，不要编写在同一个参数位置使用不同函数接口的重载。这是该建议的一个特例，详情请见第 52 条。
 
 总而言之，既然 Java 有了 `Lambda` ，就必须时刻谨记用 `Lambda` 来设计API 。输入时接受函数接口类型，并在输出时返回之。一般来说，最好使用 `java.util.function.Function` 中提供的标准接口，但是必须警惕在相对罕见的几种情况下，最好还是自己编写专用的函数接口。
+
+
+
+## 45. 谨慎使用 Stream
+
+在 Java 8中增加了 `Stream API` ，简化了串行或并行的大批量操作。这个 API 提供了两个关键抽象： `Stream` (流) 代表数据元素有限或无限的顺序， `Stream pipeline`  (流管道) 则代表这些元素的一个多级计算。`Stream` 中的元素可能来自任何位置。常见的来源包括集合、数组、文件、正则表达式模式匹配器、伪随机数生成器，以及其他 `Stream` 。`Stream` 中的数据元素可以是对象引用，或者基本类型值。它支持三种基本类型： `int`、`long` 和 `double` 。
+
+一个 `Stream pipeline` 中包含一个源 `Stream` ，接着是 0 个或者多个中间操作 (intermediate operation) 和一个终止操作 (terminal operation) 。每个中间操作都会通过某种方式对 `Stream` 进行转换，例如将每个元素映射到该元素的函数，或者过滤掉不满足某些条件的所有元素。所有的中间操作都是将一个 `Stream` 转换成另一个 `Stream` ，其元素类型可能与输入的 `Stream` 一样，也可能不同。终止操作会在最后一个中间操作产生的`Stream` 上执行一个最终的计算，例如将其元素保存到一个集合中，并返回某一个元素，或者打印出所有元素等。
+
+`Stream pipeline` 通常是 `lazy` 的： 直到调用终止操作时才会开始计算，对于完成终止操作不需要的数据元素，将永远都不会被计算。正是这种 `lazy` 计算，使无限 `Stream` 成为可能。注意，没有终止操作的 `Stream pipeline` 将是一个静默的无操作指令，因此千万不能忘记终止操作。
+
+`Stream API` 是流式 (fluent) 的：所有包含 `pipeline` 的调用可以链接成一个表达式。事实上，多个 `pipeline ` 也可以链接在一起，成为一个表达式。
+
+在默认情况下， `Stream pipeline` 是按顺序运行的。要使`pipeline`  并发执行，只需在该 `pipeline` 的任何`Stream` 上调用 `parallel` 方法即可，但是通常不建议这么做（详见第48 条） 。
+
+`Stream API` 包罗万象，足以用 `Stream` 执行任何计算，但是 "可以" 并不意味着 "应该" 。如果使用得当， `Stream` 可以使程序变得更加简洁、清晰；如果使用不当，会使程序变得混乱且难以维护。对于什么时候应该使用 `Stream` ，并没有硬性的规定，但是可以有所启发。
+
+以下面的程序为例，它的作用是从词典文件中读取单词，并打印出单词长度符合用户指定的最低值的所有换位词。记住，包含相同的字母，但是字母顺序不同的两个词，称作换位词 (anagram)。该程序会从用户指定的词典文件中读取每一个词，并将符合条件的单词放入一个映射中。这个映射键是按字母顺序排列的单词，因此`staple` 的键是 `aelpst` ， `petals` 的键也是 `aelpst`：这两个词就是换位词，所有换位词的字母排列形式是一样的(有时候也叫alphagram) 。映射值是包含了字母排列形式一致的所有单词。词典读取完成之后，每一个列表就是一个完整的换位词组。随后，程序会遍历映射的 `values()`，预览并打印出单词长度符合极限值的所有列表。
+
+```java
+// Prints all large anagram groups in a dictionary iteratively
+public class Anagrams {
+    public static void main(String[] args) throws IOException {
+        File dictionary = new File(args[0]);
+        int minGroupSize = Integer.parseInt(args[1]);
+        
+        Map<String, Set<String>> groups = new HashMap<>();
+        try (Scanner s = new Scanner(dictionary)) {
+            while (s.hasNext()) {
+                String word = s.next();
+                groups.computeIfAbsent(alphabetize(word), 
+                                       (unused) -> new TreeSet<>()).add(word);
+            }
+        }
+        for (Set<String>group : groups.values())
+            if (group.size() >= minGroupSize)
+                System.out.println(group.size() + ": " + group);
+    }
+    private static String alphabetize(String s) {
+        char[] a = s.toCharArray();
+        Arrays.sort(a);
+        return new String(a);
+    }
+}
+```
+
+这个程序中有一个步骤值得注意。被插人到映射中的每一个单词都以粗体显示，这是使用了 Java 8 中新增的`computeifAbsent` 方法。这个方法会在映射中查找一个键：如果这个键存在，该方法只会返回与之关联的值。如果键不存在，该方法就会对该键运用指定的函数对象算出一个值，将这个值与键关联起来，并返回计算得到的值。`computeifAbsent` 方法简化了将多个值与每个键关联起来的映射实现。
+
+下面举个例子，它也能解决上述问题，只不过大量使用了 `Stream` 。注意，它的所有程序都是包含在一个表达式中，除了打开词典文件的那部分代码之外。之所以要在另一个表达式中打开词典文件，只是为了使用 `try-with-resources` 语句，它可以确保关闭词典文件：
+
+```java
+// Overuse of streams - don't do this!
+public class Anagrams {
+    public static void main(String[] args) throws IOException {
+        Path dictionary = Paths.get(args[0]);
+        int minGroupSize = Integer.parseInt(args[1]);
+        try (Stream<String> words = Files.lines(dictionary)) {
+            words.collect(
+              groupingBy(word -> word.chars().sorted()
+                        .collect(StringBuilder::new, 
+                                 (sb, c) -> sb.append((char) c),
+                                StringBuilder::append).toString()))
+                .values().stream()
+                .filter(group -> group.size() >= minGroupSize)
+                .map(group -> group.size() + ": " + group)
+                .forEach(System.out::println);
+        }
+    }
+}
+```
+
+如果你发现这段代码好难懂，别担心，你并不是唯一有此想法的人。它虽然简短，但是难以读懂，对于那些使用 `Stream` 还不熟练的程序员而言更是如此。滥用 `Stream` 会使程序代码更难以读懂和维护。
+
+好在还有一种舒适的中间方案。下面的程序解决了同样的问题，它使用了 `Stream` ，但是没有过度使用。结果，与原来的程序相比，这个版本变得既简短又清晰：
+
+```java
+// Tasteful use of streams enhances clarity and conciseness
+public class Anagrams {
+    public static void main(String[] args) throws IOException {
+        Path dictionary = Paths.get(args[0]);
+        int minGroupSize = Integer.parseInt(args[1]);
+        try (Stream<String> words = Files.lines(dictionary)) {
+        	words.collect(groupingBy(word -> alphabetize(word)))
+                .values().stream()
+                .filter(group -> group.size() >= minGroupSize)
+                .forEach(g -> System.out.println(g.size() + ": " + g));
+        }
+    }
+    // alphbetize method is the same in original version
+}
+```
+
+即使你之前没怎么接触过 `Stream` ，这段程序也不难理解。它在 `try-with-resources` 块中打开词典文件，获得一个包含了文件中所有代码的 `Stream` 。`Stream` 变量命名为 `words` , 是建议`Stream` 中的每个元素均为单词。这个 `Stream` 中的 `pipe line` 没有中间操作；它的终止操作将所有的单词集合到一个映射中，按照它们的字母排序形式对单词进行分组 (详见第 46 条)。这个映射与前面两个版本中的是完全相同的。随后，在映射的`values()` 视图中打开了一个新的 `Stream<List<String>>`。当然，这个 `Stream` 中的元素都是换位词分组。`Stream` 进行了过滤，把所有单词长度小于 `minGroupSize` 的单词都去掉了，最后，通过终止操作的 `forEach` 打印出剩下的分组。
+
+注意， `Lambda` 参数的名称都是经过精心挑选的。实际上参数应当以 `group` 命名，只是这样得到的代码行对于书本而言太宽了。在没有显式类型的情况下，仔细命名 `Lambda`参数， 这对于`Stream pipeline` 的可读性至关重要。
+还要注意单词的字母排序是在一个单独的 `alphabetize` 方法中完成的。给操作命名，并且不要在主程序中保留实现细节，这些都增强了程序的可读性。在 `Stream pipeline` 中使用 `helper`方法，对于可读性而言，比在迭代化代码中使用更为重要，因为 `pipeline` 缺乏显式的类型信息和具名临时变量。
+
+可以重新实现 `alphabetize` 方法来使用 `Stream` ，只是基于 `Stream` 的 `alphabetize` 方法没那么清晰，难以正确编写，速度也可能变慢。这些不足是因为 Java 不支持基本类型的 `char Stream` （这并不意味着Java 应该支持 `char Stream` ；也不可能支持） 。为了证明用 `Stream` 处理 `char` 值的各种危险，请看以下代码：
+
+`"Hello world!".chars().forEach(System.out::print);`
+
+或许你以为它会输出 `Hello world!` ，但是运行之后发现，它输出的是 `721011081081113211911111410810033` 。这是因为 `Hello world !”.chars()`返回的 `Stream` 中的元素，并不是 `char` 值，而是 `int` 值，因此调用了`print` 的 `int` 覆盖。名为 `chars` 的方法，却返回 `int` 值的`Stream` ，这固然会造成困扰。修正方法是利用转换强制调用正确的覆盖：
+
+`"Hello world!".chars().forEach(x->System.out.print((char) x));`
+
+但是， 最好避免利用 `Stream` 来处理 `char` 值。
+
+刚开始使用 `Stream` 时，可能会冲动到恨不得将所有的循环都转换成 `Stream` ，但是切记，千万别冲动。这可能会破坏代码的可读性和易维护性。一般来说即使是相当复杂的任务，最好也结合 `Stream` 和迭代来一起完成，如上面的 `Anagrams` 程序范例所示。因此， 重构现有代码来使用 `Stream` ，并且只在必要的时候才在新代码中使用。
+
+如本条目中的范例程序所示， `Stream pipeline` 利用函数对象（一般是 `Lambda` 或者方法引用）来描述重复的计算，而迭代版代码则利用代码块来描述重复的计算。下列工作只能通过代码块，而不能通过函数对象来完成：
+
+* 从代码块中，可以读取或者修改范围内的任意局部变量；从 `Lambda` 则只能读取 `final` 或者有效的 `final` 变量［ JLS 4.12.4 ］，并且不能修改任何 `local` 变量。
+* 从代码块中，可以从外国方法中 `return` 、`break` 或 `continue` 外围循环，或者抛出该方法声明要抛出的任何受检异常；从 `Lambda` 中则完全无法完成这些事情。
+
+如果某个计算最好要利用上述这些方法来描述，它可能并不太适合 `Stream` 。反之， `Stream` 可以使得完成这些工作变得易如反掌：
+
+* 统一转换元素的序列
+* 过滤元素的序列
+* 利用单个操作（如添加、连接或者计算其最小值）合并元素的顺序
+* 将元素的序列存放到一个集合中，比如根据某些公共属性进行分组
+* 搜索满足某些条件的元素的序列
+
+如果某个计算最好是利用这些方法来完成，它就非常适合使用 `Stream` 。
+
+利用 `Stream` 很难完成的一件事情就是，同时从一个 `pipeline` 的多个阶段去访问相应的元素：一旦将一个值映射到某个其他值，原来的值就丢失了。一种解决办法是将每个值都映射到包含原始值和新值的一个对象对（ pair object ），不过这并非万全之策，当`pipeline` 的多个阶段都需要这些对象对时尤其如此。这样得到的代码将是混乱、繁杂的，违背了 `Stream` 的初衷。最好的解决办法是，当需要访问较早阶段的值时，将映射颠倒过来。
+
+例如，编写一个打印出前20 个梅森素数 (Mersenne primes) 的程序。解释一下，梅森素数是一个形式为2<sup>p</sup> - 1 的数字。如果 `p` 是一个素数，相应的梅森数字也是素数；那么它就是一个梅森素数。作为 `pipeline` 的第一个`Stream` ，我们想要的是所有素数。下面的方法将返回（无限） `Stream` 。假设使用的是静态导入，便于访问 `Biginteger` 的静态成员：
+
+```java
+static Stream<BigInteger> primes() {
+    return Stream.iterate(TWO, BigInteger::nextProbablePrime);
+}
+```
+
+方法的名称（ `primes` ）是一个复数名词，它描述了 `Stream` 的元素。强烈建议返回 `Stream` 的所有方法都采用这种命名惯例，因为可以增强 `Stream pipeline` 的可读性。该方法使用静态工厂 `Stream.iterate` ，它有两个参数： `Stream` 中的第一个元素，以及从前一个元素中生成下一个元素的一个函数。下面的程序用于打印出前 20 个梅森素数。
+
+```java
+public static void main(String[] args) {
+    primes().map(p -> TWO.pow(p.intValueExact()).subtract(ONE))
+        .filter(mersenne -> mersenne.isProbablePrime(50))
+        .limit(20)
+        .forEach(System.out::println);
+}
+```
+
+这段程序是对上述内容的简单编码示范： 它从素数开始，计算出相应的梅森素数，过滤掉所有不是素数的数字(其中 50 是个神奇的数字，它控制着这个概率素性测试)，限制最终得到的 `Stream` 为20 个元素，并打印出来。
+
+现在假设想要在每个梅森素数之前加上其指数 (p)。这个值只出现在第一个 `Stream` 中，因此在负责输出结果的终止操作中是访问不到的。所幸将发生在第一个中间操作中的映射颠倒过来，便可以很容易地计算出梅森数字的指数。该指数只不过是一个以二进制表示的位数， 因此终止操作可以产生所要的结果：
+
+`.forEach(mp -> System.out.println(mp.bitLength() + ": " + mp));`
+
+现实中有许多任务并不明确要使用 `Stream` ，还是用迭代。例如有个任务是要将一副新纸牌初始化。假设 `Card` 是一个不变值类，用于封装 `Rank` 和 `Suit` ，这两者都是枚举类型。这项任务代表了所有需要计算从两个集合中选择所有元素对的任务。数学上称之为两个集合的笛卡尔积。这是一个迭代化实现，嵌入了一个`for-each` 循环，大家对此应当都非常熟悉了：
+
+```java
+// Iterative Cartesian product computation
+private static List<Card> new Deck() {
+    List<Card> result = new ArrayList<>();
+    for (Suit suit : Suit.values())
+        for (Rank rank : Rank.values())
+            result.add(new Card(suit, rank));
+    return result;
+}
+```
+
+这是一个基于 `Stream` 的实现，利用了中间操作 `flatMap` 。这个操作是将 `Stream `中的每个元素都映射到一个`Stream` 中，然后将这些新的 `Stream` 全部合并到一个`Stream`  (或者将它们扁平化)。注意，这个实现中包含了一个嵌入式的 `Lambda` ，如以下粗体部分所示：
+
+```java
+// Stram-based Cartesian product computation
+private static List<Card> newDeck() {
+    return Stream.of(Suit.values())
+        .flatMap(suit -> Stream.of(Rank.values())
+                 .map(rank -> new Card(suit, rank)))
+        .collect(toList());
+}
+```
+
+这两种 `newDeck` 版本哪一种更好？这取决于个人偏好，以及编程环境。第一种版本比较简单，可能感觉比较自然，大部分 Java 程序员都能够理解和维护，但是有些程序员可能会觉得第二种版本(基于 `Stream` 的)更舒服。这个版本可能更简洁一点，如果已经熟练掌握 `Stream` 和函数编程，理解起来也不难。如果不确定要用哪个版本，或许选择迭代化版本会更加安全一些。如果更喜欢 `Stream` 版本，并相信后续使用这些代码的其他程序员也会喜欢，就应该使用 `Stream` 版本。
+
+总之，有些任务最好用 `Stream` 完成，有些则要用迭代。而有许多任务则最好是结合使用这两种方法来一起完成。具体选择用哪一种方法，并没有硬性、速成的规则，但是可以参考一些有意义的启发。在很多时候，会很清楚应该使用哪一种方法；有些时候，则不太明显。如果实在不确定用 `Stream` 还是用迭代比较好，那么就两种都试试，看看哪一种更好用吧。
+
+
+
+## 46. 优先选择 Stream 中无副作用的函数
+
+如果刚接触 `Stream` ，可能比较难以掌握其中的窍门。就算只是用 `Stream pipeline` 来表达计算就困难重重。当你好不容易成功了，运行程序之后，却可能感到这么做并没有享受到多大益处。`Stream`并不只是一个 API，它是一种基于函数编程的模型。为了获得 `Stream` 带来的描述性和l速度，有时还有并行性，必须采用范型以及 API 。
+
+`Stream` 范型最重要的部分是把计算构造成一系列变型，每一级结果都尽可能靠近上一级结果的纯函数 (pure function)。纯函数是指其结果只取决于输入的函数： 它不依赖任何可变的状态，也不更新任何状态。为了做到这一点，传入 `Stream` 操作的任何函数对象，无论是中间操作还是终止操作，都应该是无副作用的。
+
+有时会看到如下代码片段，它构建了一张表格，显示这些单词在一个文本文件中出现的频率：
+
+```java
+// Uses the streams API but not the paradigm - Don't do this!
+Map<String, Long> freq = new HashMap<>();
+try (Stream<String> words = new Scanner(file).tokens()) {
+    words.forEach(word -> {
+        freq.merge(word.toLowerCase(), 1L, Long::sum);
+    });
+}
+```
+
+以上代码有什么问题吗？它毕竟使用了 `Stream` 、`Lambda` 和方法引用，并且得出了正确的答案。简而言之，这根本不是 `Stream` 代码；只不过是伪装成 `Stream` 代码的迭代式代码。它并没有享受到 `Stream API` 带来的优势，代码反而更长了点，可读性也差了点，并且比相应的迭代化代码更难维护。因为这段代码利用一个改变外部状态（频率表）的 `Lambda` ，完成了在终止操作的 `forEach` 中的所有工作。`forEach` 操作的任务不只展示由`Stream` 执行的计算结果，这在代码中并非好事，改变状态的 `Lambda` 也是如此。那么这段代码应该是什么样的呢？
+
+```java
+// Proper use of streams to initialize a frequency table
+Map<String, Long> freq;
+try (Stream<String> words = new Scanner(file).tokens()) {
+    freq = words.collect(groupingBy(String::toLowerCase, counting()));
+}
+```
+
+这个代码片段的作用与前一个例子一样，只是正确使用了`Stream API` ，变得更加简洁、清晰。那么为什么有人会以其他的方式编写呢？这是为了使用他们已经熟悉的工具。Java 程序员都知道如何使用 for-each 循环，终止操作的 `forEach` 也与之类似。但 `forEach` 操作是终止操作中最没有威力的，也是对 `Stream` 最不友好的。它是显式迭代，因而不适合并行。**`forEach` 操作应该只用于报告 `Stream` 计算的结果，而不是执行计算**。有时候，也可以将 `forEach` 用于其他目的，比如将 `Stream` 计算的结果添加到之前已经存在的集合中去。
+
+改进过的代码使用了一个收集器 (collector)，为了使用 `Stream` ，这是必须了解的一个新概念。`Collectors API` 很吓人：它有 39 种方法，其中有些方法还带有 5 个类型参数！好消息是，你不必完全搞懂这个 API 就能享受它带来的好处。对于初学者，可以忽略 `Collector` 接口，并把收集器当作封装缩减策略的一个黑盒子对象。在这里，缩减的意思是将 `Stream` 的元素合并到单个对象中去。收集器产生的对象一般是一个集合(即名称收集器)。
+
+将 `Stream` 的元素集中到一个真正的 `Collection` 里去的收集器比较简单。有三个这样的收集器： `toList()`、`toSet()`和 `toCollection(collectionFactory)` 。它们分别返回一个列表、一个集合和程序员指定的集合类型。了解了这些，就可以编写 `Stream pipeline`时，从频率表中提取排名前十的单词列表了：
+
+```java
+// Pipeline to get a top-ten list of words from a frequency table
+List<String> topTen = freq.keySet().stream()
+    .sorted(comparing(freq::get).reversed())
+    .limit(10)
+    .collect(toList());
+```
+
+注意，这里没有给 `toList` 方法配上它的 `Collectors` 类。**静态导入`Collectors` 的所有成员是惯例也是明智的，因为这样可以提升`Stream pipeline` 的可读性**。
+
+这段代码中唯一有技巧的部分是传给 `sorted` 的比较器 `comparing(freq::get).reversed()` 。 `comparing `方法是一个比较器构造方法(详见第14 条)，它带有一个键提取函数。函数读取一个单词，“提取” 实际上是一个表查找：有限制的方法引用`freq:: get` 在频率表中查找单词，并返回该单词在文件中出现的次数。最后，在比较器上调用 `reversed`, 按频率高低对单词进行排序。后面的事情就简单了，只要限制 `Stream` 为 10 个单词，并将它们集中到一个列表中即可。
+
+上一段代码是利用 `Scanner` 的 `Stream` 方法来获得 `Stream` 。这个方法是在 Java 9 中增加的。如果使用的是更早的版本，可以把实现`Iterator` 的扫描器，翻译成使用了类似于第 47 条中适配器的 `Stream(streamOf(iterable<E>))` 。
+
+`Collectors` 中的另外 36 种方法又是什么样的呢？它们大多数是为了便于将 `Stream` 集合到映射中，这远比集中到真实的集合中要复杂得多。每个 `Stream` 元素都有一个关联的键和值，多个 `Stream` 元素可以关联同一个键。
+
+最简单的映射收集器是 `toMap(keyMapper,valueMapper)`，它带有两个函数，其中一个是将 `Stream` 元素映射到键，另一个是将它映射到值。我们采用第 34 条 `fromString` 实现中的收集器，将枚举的字符串形式映射到枚举本身：
+
+```java
+// Using a toMap collector to make a map from string to enum
+private static final Map<String, Operation> stringToEnum = 
+    Stream.of(values()).collect(toMap(Object::toString, e -> e));
+```
+
+如果 `Stream` 中的每个元素都映射到一个唯一的键，那么这个形式简单的 `toMap` 是很完美的。如果多个`Stream` 元素映射到同一个键， `pipeline` 就会抛出一个 `IllegalStateException`异常将它终止。
+
+`toMap` 更复杂的形式，以及 `groupingBy` 方法，提供了更多处理这类冲突的策略。其中一种方式是除了给`toMap` 方法提供了键和值映射器之外，还提供一个合并函数 (merge function) 。合并函数是一个`BinaryOperator<V >`，这里的 `V`  是映射的值类型。合并函数将与键关联的任何其他值与现有值合并起来，因此，假如合并函数是乘法，得到的值就是与该值映射的键关联的所有值的积。
+
+带有三个参数的 `toMap` 形式，对于完成从键到与键关联的被选元素的映射也是非常有用的。假设有一个`Stream` ，代表不同歌唱家的唱片，我们想得到一个从歌唱家到最畅销唱片之间的映射。下面这个收集器就可以完成这项任务。
+
+```java
+// Collector to generate a map from key to chosen element for key
+Map<Artist, Album> topHits = albums.collect(
+	toMap(Album::artist, a -> a, maxBy(comparing(Album::sales))));
+```
+
+注意，这个比较器使用了静态工厂方法 `maxBy` ，这是从 `BinaryOperator` 静态导入的。该方法将`Comparator<T>` 转换成一个 `BinaryOperator<T>`， 用于计算指定比较器产生的最大值。在这个例子中，比较器是由比较器构造器方法 `comparing` 返回的，它有一个键提取函数 `Album : : sales` 。这看起来有点绕，但是代码的可读性良好。不严格地说，它的意思是 “将唱片的 `Stream` 转换成一个映射，将每个歌唱家映射到销量最佳的唱片“ 这就非常接近问题陈述了。
+
+带有三个参数的 `toMap` 形式还有另一种用途，即生成一个收集器，当有冲突时强制 “保留最后更新”（ last-write -wins ）。对于许多 `Stream` 而言，结果是不确定的，但如果与映射函数的键关联的所有值都相同，或者都是可接受的，那么下面这个收集器的行为就正是你所要的：
+
+```java
+// Collector to impose last-write-wins policy
+toMap(keyMapper, valueMapper, (oldVal, newVal) -> new?Val)
+```
+
+`toMap` 的第三个也是最后一种形式是，带有第四个参数，这是一个映射工厂，在使用时要指定特殊的映射实现，如 `EnurnMap` 或者 `TreeMap` 。
+
+`toMap` 的前三种版本还有另外的变换形式命名为 `toConcurrentMap` ，能有效地并行运行，并生成`ConcurrentHashMap` 实例。
+
+除了 `toMap` 方法， `Collectors API` 还提供了`groupingBy` 方法，它返回收集器以生成映射，根据分类函数将元素分门别类。分类函数带有一个元素，并返回其所属的类别。这个类别就是元素的映射键。`groupingBy` 方法最简单的版本是只有一个分类器，并返回一个映射，映射值为每个类别中所有元素的列表。下列代码就是在第 45 条的`Anagram` 程序中用于生成映射（从按字母排序的单词，映射到字母排序相同的单词列表）的收集器：
+
+`words.collect(groupingBy(word -> alphzbetize(word)))`
+
+如果要让 `groupingBy` 返回一个收集器用它生成一个值而不是列表的映射，除了分类器之外，还可以指定一个下游收集器（ downstream collector ） 。下游收集器从包含某个类别中所有元素的 `Stream` 中生成一个值。这个参数最简单的用法是传入`toSet()`，结果生成一个映射，这个映射值为元素集合而非列表。
+
+另一种方法是传入`toCollection` (collectionFactory)，允许创建存放各元素类别的集合。这样就可以自由选择自己想要的任何集合类型了。带两个参数的 `groupingBy` 版本的另一种简单用法是，传入`counting()` 作为下游收集器。这样会生成一个映射，它将每个类别与该类别中的元素数量关联起来，而不是包含元素的集合。这正是在本条目开头处频率表范例中见到的：
+
+`Map<String, Long> freq = words.collect(groupingBy(String::toLowerCase, counting()));`
+
+`groupingBy` 的第三个版本，除了下游收集器之外，还可以指定一个映射工厂。注意，这个方法违背了标准的可伸缩参数列表模式： 参数`mapFactory` 要在 `down Stream`参数之前，而不是在它之后。`groupingBy` 的这个版本可以控制所包围的映射，以及所包围的集合，因此，比如可以定义一个收集器， 让它返回值为`TreeSets` 的 `TreeMap` 。
+
+`groupingByConcurrent` 方法提供了`groupingBy` 所有三种重载的变体。这些变体可以有效地并发运行，生成`ConcurrentHashMap` 实例。还有一种比较少用到的 `groupingBy` 变体叫作 `partitioningBy` 。除了分类方法之外，它还带一个断言(predicate)，并返回一个键为 `Boolean` 的映射。这个方法有两个重载，其中一个除了带有断言之外，还带有下游收集器。
+
+`counting` 方法返回的收集器仅用作下游收集器。通过在 `Stream` 上的 `count` 方法，直接就有相同的功能，因此压根没有理由使用 `collect(counting())`。这个属性还有15 种 `Collectors` 方法。其中包含 9 种方法其名称以 `summing` 、`averaging` 和 `summarizing`开头 (相应的 `Stream` 基本类型上就有相同的功能) 。它们还包`reducing` 、`filtering` 、`mapping` 、`flatMapping` 和 `collectingAndThen` 方法。大多数程序员都能安全地避开这里的大多数方法。从设计的角度来看，这些收集器试图部分复制收集器中 `Stream` 的功能，以便下游收集器可以成为 “ ministream ” 。
+
+目前已经提到了 3 个 `Collectors` 方法。虽然它们都在 `Collectors` 中，但是并不包含集合。前两个是 `minBy` 和 `maxBy` ，它们有一个比较器并返回由比较器确定的 `Stream` 中的最少元素或者最多元素。它们是`Stream` 接口中 `min` 和 `max` 方法的粗略概括，也是 `BinaryOperator` 中同名方法返回的二进制操作符，与收集器相类似。回顾一下在最畅销唱片范例中用过的 `BinaryOperator.maxBy` 方法。
+
+最后一个 `Collectors` 方法是 `joining` ，它只在 `CharSequence` 实例的 `Stream` 中操作，例如字符串。它以参数的形式返回一个简单地合并元素的收集器。其中一种参数形式带有一个名为 `delimiter` （分界符）的`CharSequence` 参数，它返回一个连接 `Stream` 元素并在相邻元素之间插入分隔符的收集器。如果传入一个逗号作为分隔符，收集器就会返回一个用逗号隔开的值字符串（但要注意，如果 `Stream` 中的任何元素中包含逗号，这个字符串就会引起歧义） 。这三种参数形式，除了分隔符之外，还有一个前缀和一个后缀。最终的收集
+器生成的字符串，会像在打印集合时所得到的那样，如［came, saw, conquered ] 。
+
+总而言之，编写 `Stream pipeline` 的本质是无副作用的函数对象。这适用于传入 `Stream`及相关对象的所有函数对象。终止操作中的 `forEach` 应该只用来报告由 `Stream` 执行的计算结果，而不是让它执行计算。为了正确地使用 `Stream` ，必须了解收集器。最重要的收集器工厂是 `toList` 、`toSet` 、`toMap` 、`groupingBy` 和`joining` 。
