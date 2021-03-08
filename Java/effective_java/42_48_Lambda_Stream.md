@@ -490,3 +490,225 @@ toMap(keyMapper, valueMapper, (oldVal, newVal) -> new?Val)
 器生成的字符串，会像在打印集合时所得到的那样，如［came, saw, conquered ] 。
 
 总而言之，编写 `Stream pipeline` 的本质是无副作用的函数对象。这适用于传入 `Stream`及相关对象的所有函数对象。终止操作中的 `forEach` 应该只用来报告由 `Stream` 执行的计算结果，而不是让它执行计算。为了正确地使用 `Stream` ，必须了解收集器。最重要的收集器工厂是 `toList` 、`toSet` 、`toMap` 、`groupingBy` 和`joining` 。
+
+
+
+## 47. Stream 要优先用 Collection 作为返回类型
+
+许多方法都返回元素的序列。在 Java 8 之前，这类方法明显的返回类型是集合接口 `Collection` 、`Set` 和 `IList`、 `Iterable` 、以及数组类型。一般来说，很容易确定要返回这其中哪一种类型。标准是一个集合接口。如果某个方法只为 `for-each` 循环或者返回序列而存在，无法用它来实现一些 `Collection` 方法（一般是contains(Object))，那么就用 `Iterable` 接口吧。如果返回的元素是基本类型值，或者有严格的性能要求，就使用数组。在Java 8 中增加了 `Stream` ，本质上导致给序列化返回的方法选择适当返回类型的任务变得更复杂了。
+
+或许你曾昕说过，现在 `Stream` 是返回元素序列最明显的选择了，但如第45 条所述，`Stream` 并没有淘汰迭代： 要编写出优秀的代码必须巧妙地将 `Stream` 与迭代结合起来使用。如果一个 API 只返回一个 `Stream` ，那些想要用 `for-each` 循环遍历返回序列的用户肯定要失望了。因为 `Stream` 接口只在 `Iterable` 接口中包含了唯一一个抽象方法， `Stream` 对于该方法的规范也适用于 `Iterable` 的。唯一可以让程序员避免用 `for-each` 循环遍历 `Stream` 的是 `Stream` 无法扩展 `Iterable` 接口。
+
+遗憾的是，这个问题还没有适当的解决办法。乍看之下，好像给 `Stream` 的 `iterator` 方法传入一个方法引用可以解决。这样得到的代码可能有点杂乱、不清晰，但也不算难以理解：
+
+```java
+// Won't compile, due to limitations on Java's type inference
+for (ProcessHandle ph : ProcessHandle.allProcesses()::iterator) {
+    // Process the process
+}
+```
+
+遗憾的是，如果要编译这段代码，就会得到一条报错的信息：
+
+```bash
+Test.java:6: error: method reference not expected here
+for (ProcessHandle ph : ProcessHandle.allProcesses()::iterator) {
+                        ^
+```
+
+为了使代码能够进行编译，必须将方法引用转换成适当参数化的 `Iterable` :
+
+``` java
+// Hideous workaround to iterate over a stream
+for (ProcessHandle ph : (Iteratable<ProcessHandle>)
+     					ProcessHandle.allProcesses()::iterator) {
+    
+}
+```
+
+这个客户端代码可行，但是实际使用时过于杂乱、不清晰。更好的解决办法是使用适配器方法。JDK 没有提供这样的方法，但是编写起来很容易，使用在上述代码中内嵌的相同方法即可。注意，在适配器方法中没有必要进行转换，因为 Java 的类型引用在这里正好派上了用场：
+
+```java
+// Adapter from Stream<E> to Iterable<E>
+public static <E> Iterable<E> iterableOf(Stream<E> stream) {
+	return stream::iterator;
+}
+```
+
+有了这个适配器，就可以利用 `for-each` 语句遍历任何Stream:
+
+```java
+for (ProcessHandle p : iterableOf(ProcessHandle.allProcesses())) {
+    // Process the process
+}
+```
+
+注意，第34 条中 `Anagrams` 程序的 `Stream` 版本是使用 `Files.lines` 方法读取同典，而迭代版本则使用了扫描器  `scanner` 。`Files.lines` 方法优于扫描器，因为后者默默地吞掉了在读取文件过程中遇到的所有异常。最理想的方式是在迭代版本中也使用 `Files.lines` 。这是程序员在特定情况下所做的一种妥协，比如当 API 只有 `Stream` 能访问序列，而他们想通过 `for-each` 语句遍历该序列的时候。
+
+反过来说，想要利用 `Stream pipeline` 处理序列的程序员，也会被只提供 `Iterable` 的 API 搞得束手无策。同样地， JDK 没有提供适配器，但是编写起来也很容易：
+
+```java
+// Adapter from Iterable<E> to Stream<E>
+public static <E>Stream<E> streamOf(Iterable<E> iterable) {
+    return StreamSupport.stream(iterable.spliterator(), false);
+}
+```
+
+如果在编写一个返回对象序列的方法时，就知道它只在 `Stream pipeline` 中使用，当然就可以放心地返回 `Stream` 了。同样地，当返回序列的方法只在迭代中使用时，则应该返回 `Iterable` 。但如果是用公共的 API 返回序列，则应该为那些想要编写 `Stream pipeline` ，以及想要编写 `for-each` 吾句的用户分别提供除非有足够的理由相信大多数用户都想要使用相同的机制。
+
+`Collection` 接口是 `Iterable` 的一个子类型，它有一个 `stream` 方法，因此提供了迭代和 `Steam` 访问。**对于公共的、返回序列的方法， `Collection` 或者适当的子类型通常是最佳的返回类型**。数组也通过` Arrays.asList` 和 `Stream.of` 方法提供了简单的迭代和 `stream` 访问。如果返回的序列足够小，容易存储，或许最好返回标准的集合实现，如 `ArrayList` 或者 `HashSet` 。但是**千万别在内存中保存巨大的序列，将它作为集合返回即可**。
+
+如果返回的序列很大，但是能被准确表述，可以考虑实现一个专用的集合。假设想要返回一个指定集合的幂集(power set)，其中包括它所有的子集。{ a, b, c } 的幂集是 `{{},{a},{b},{c},{a,b},{a,c},{b,c},{a,b,c} }` 。如果集合中有 `n` 个元素，它的幕集就有 `2n` 个。因此，不必考虑将幂集保存在标准的集合实现中。但是，有了 `AbstractList` 的协助，为此实现定制集合就很容易了。
+
+技巧在于，用幂集中每个元素的索引作为位向量，在索引中排第 `n` 位，表示源集合中第 `n` 位元素存在或者不存在。实质上，在二进制数 `0` 至 `2n-1` 和有 `n` 位元素的集合的幂集之间，有一个自然映射。代码如下：
+
+```java
+// Retures the power set of an input set as custom collection
+public class PowerSet {
+    public static final <E> Collection<Set<E>> of(Set<E> s) {
+        List<E> src = new ArrayList<>(s);
+        if(src.size() > 30)
+            throw new IllegalArgumentException("Set too big " + s);
+        return new AbstractList<Set<E>>() {
+            @Override public int size() {
+                return 1 << src.size(); // 2 to power srcSize
+            }
+            @Override public boolean contains(Object o) {
+                return o instanceof Set && src.containsAll((Set)o);
+            }
+            @Override public Set<E> get(int index) {
+                Set<E> result = new HashSet<>();
+                for (int i=0; index != 0; i++, index >>= 1)
+                    if ((index & 1) == 1)
+                        result.add(src.get(i));
+                return result;
+            }
+        };
+    }
+}
+```
+
+注意，如果输入值集合中超过 30 个元素， `PowerSet.of` 会抛出异常。这正是用 `Collection` 而不是用`Stream` 或 `Iterable` 作为返回类型的缺点： `Collection` 有一个返回 `int` 类型的 `size` 方法，它限制返回的序列长度为 `Integer.MAX_VALUE` 或者 2<sup>31</sup> - 1 。如果集合更大，甚至无限大， `Collection` 规范确实允许 `Size` 方法返回 2<sup>31</sup> - 1 ，但这并非是最令人满意的解决方案。
+
+为了在 `AbstractCollection` 上编写一个 `Collection` 实现，除了 `Iterable` 必需的那一个方法之外，只需要再实现两个方法： `contains` 和 `size` 。这些方法经常很容易编写出高效的实现。如果不可行，或许是因为没有在迭代发生之前先确定序列的内容，返回 `Stream` 或者 `Iterable` ，感觉哪一种更自然即可。如果能选择，可以尝试着分别用两个方法返回。
+
+有时候在选择返回类型时，只需要看是否易于实现即可。例如，要编写一个方法，用它返回一个输入列表的所有（相邻的）子列表。它只用三行代码来生成这些子列表，并将它们放在一个标准的集合中，但存放这个集合所需的内存是源列表大小的平方。这虽然没有幂集那么糟糕，但显然也是无法接受的。像给幂集实现定制的集合那样，确实很烦琐，这个可能还更甚，因为 JDK 没有提供基本的 `Iterator` 实现来支持。
+
+但是，实现输入列表的所有子列表的 `Stream` 是很简单的，尽管它确实需要有点洞察力。我们把包含列表第一个元素的子列表称作列表的前缀。例如，(a, b, c) 的前缀就是(a)、(a , b) 和 (a , b, c) 。同样地，把包含最后一个元素的子列表称作后缀，因此 (a, b, c) 的后缀就是 (a, b , c)、(b , c) 和 (c) 。考验洞察力的是，列表的子列表不过是前缀的后缀（或者说后缀的前缀）和空列表。这一发现直接带来了一个清晰且相当简洁的实现：
+
+```java
+// Returns a stream of all the sublists of its input list
+public class SubLists {
+    public static <E> Stream<List<E>> of (List<E> list) {
+        return Stream.concat(Stream.of(Collections.emptyList()),
+                            prefixes(list).flatMap(SubLists::suffixes));
+    }
+    private static <E> Stream<List<E>> prefixes(List<E> list) {
+        return IntStream.rangeClosed(1, list.size())
+            .mapToObj(end -> list.subList(0, end));
+    }
+    private static <E> Stream<List<E>> suffixes(List<E> list) {
+        return IntStream.range(0, list.size())
+            .mapToObj(start -> list.subList(start, list.size()));
+    }
+}
+```
+
+注意，它用 `Stream.concat` 方法将空列表添加到返回的 `Stream` 。另外还用 `flatMap` 方法（详见第45 条）生成了一个包含了所有前缀的所有后缀的 `Stream` 。最后，通过映射 `IntStream.range` 和`IntStream.rangeClosed` 返回的连续 `int` 值的 `Stream` ，生成了前缀和后缀。通俗地讲，这一术语的意思就是指数为整数的标准 `for` 循环的 `Stream` 版本。因此，这个子列表实现本质上与明显的嵌套式 `for` 循环相类似：
+
+```java
+for (int start=0; start<src.size(); start++)
+    for (int end=start+1; end<=src.size(); end++)
+        System.out.println(src.subList(start, end));
+```
+
+这个 `for` 循环也可以直接翻译成一个 `Stream` 。这样得到的结果比前一个实现更加简洁，但是可读性稍微差了一点。它本质上与第45 条中笛卡尔积的 `Stream` 代码相类似：
+
+```java
+// Returns a stream of all the sublists of its input list
+public static <E> Stream<List<E>> of (List<E> list) {
+    return IntStream.range(0, list.size())
+        .mapToObj(start -> IntStream.rangeClose(start+1, list.size())
+                 .mapToObj(end -> list.subList(start, end)))
+        .flatMap(x -> x);
+}
+```
+
+像前面的 `for` 循环一样，这段代码也没有发出空列表。为了修正这个错误，也应该使用 `concat` ，如前一个版本中那样，或者用 `rangeClosed` 调用中的 `(int) Math.signum(start)` 代替 1。
+
+子列表的这些 `Stream` 实现都很好，但这两者都需要用户在任何更适合迭代的地方，采用 `Stream-to-Iterable` 适配器，或者用 `Stream` 。`Stream-to-Iterable` 适配器不仅打乱了客户端代码，在我的机器上循环的速度还降低了 2.3 倍。专门构建的 `Collection` 实现（此处没有展示）相当烦琐，但是运行速度在我的机器上比基于 `Stream` 的实现快了约1.4 倍。
+
+总而言之，在编写返回一系列元素的方法时，要记住有些用户可能想要当作 `Stream` 处理，而其他用户可能想要使用迭代。要尽量两边兼顾。如果可以返回集合，就返回集合。如果集合中已经有元素，或者序列中的元素数量很少，足以创建一个新的集合，那么就返回一个标准的集合，如 `ArrayList` 。否则，就要考虑实现一个定制的集合，如幕集(power set)范例中所示。如果无法返回集合，就返回 `Stream` 或者 `lterable` ，感觉哪一种更自然即可。如果在未来的 Java 发行版本中， `Stream` 接口声明被修改成扩展了 `Iterable` 接口，就可以放心地返回 `Stream` 了，因为它们允许进行 `Stream` 处理和迭代。
+
+
+
+## 48. 谨慎使用 Stream 并行
+
+在主流的编程语言中， Java 一直走在简化并发编程任务的最前沿。1996 年 Java 发布时，就通过同步和 `wait/notify` 内置了对线程的支持。Java 5 引入了 `java.util.concurrent` 类库，提供了并行集合(concurrent collection) 和执行者框架 (executor framework) 。Java 7 引入了 `fork-join` 包，这是一个处理并行分解的高性能框架。Java 8 引入了 `Stream` ，只需要调用一次 `parallel` 方法就可以实现并行处理。在Java 中编写并发程序变得越来越容易，但是要编写出正确又快速的并发程序，则一向没那么简单。安全性和活性失败是并发编程中需要面对的问题， `Stream pipeline` 并行也不例外。
+请看摘自第45 条的这段程序：
+
+```java 
+// Stream-based program to generate the first 20 Mersenne primes
+public static void main(String[] args) {
+    primes().map(p -> TWO.pow(p.intValueExact()).subtract(ONE))
+        .filter(mersenne -> mersenne.isProbablePrime(50))
+        .limit(20)
+        .forEach(System.out::println);
+}
+static Stream<BigInteger> primes() {
+    return System.iterate(TWO, BigInteger::nextProbablePrime);
+}
+```
+
+在我的机器上，这段程序会立即开始打印素数，完成运行花了 12. 5 秒。假设我天真地想通过在 `Stream pipeline` 上添加一个 `parallel()` 调用来提速。你认为这样会对其性能产生什么样的影响呢？运行速度会稍微快一点点吗？还是会慢一点点？遗憾的是，其结果是根本不打印任何内容了， CPU 的使用率却定在90% 一动不动了（ 活性失败） 。程序最后可能会终止，但是我不想一探究竟，半个小时后就强行把它终止了。
+
+这是怎么回事呢？简单地说， `Stream` 类库不知道如何并行这个 `pipeline` ，以及如何探索失败。即便在最佳环境下， 如果源头是来自 `Stream.iterate` ， 或者使用了中间操作的 `limit` ， 那么并行 `pipeline`也不可能提升性能。这个pipeline 必须同时满足这两个条件。更糟糕的是，默认的并行策略在处理 `limit` 的不可预知性时，是假设额外多处理几个元素，并放弃任何不需要的结果，这些都不会影响性能。在这种情况下，它查找每个梅森素数时，所花费的时间大概是查找之前元素的两倍。因而， 额外多计算一个元素的成本，大概相当于计算所有之前元素总和的时间， 这个貌似无伤大雅的 `pipeline` ， 却使得自动并行算法濒临崩溃。这个故事的寓意很简单： **千万不要任意地并行`Stream pipeline`**。它造成的性能后果有可能是灾难性的。
+
+总之，**在 `Stream` 上通过并行获得的性能， 最好是通过 `ArrayList` 、`HashMap` 、`HashSet`和`ConcurrentHashMap` 实例，数组， `int` 范围和 `long` 范围等**。这些数据结构的共性是，都可以被精确、轻松地分成任意大小的子范围，使并行线程中的分工变得更加轻松。`Stream` 类库用来执行这个任务的抽象是分割迭代器（ spliterator ），它是由 `Stream` 和 `Iterable` 中的 `spliterator` 方法返回的。
+
+这些数据结构共有的另一项重要特性是，在进行顺序处理时，它们提供了优异的引用局部性（ locality of reference ）：序列化的元素引用一起保存在内存中。被那些引用访问到的对象在内存中可能不是一个紧挨着一个， 这降低了引用的局部性。事实证明，引用局部性对于并行批处理来说至关重要：没有它，线程就会出现闲置，需要等待数据从内存转移到处理器的缓存。具有最佳引用局部性的数据结构是基本类型数组，因为数据本身是相邻地保存在内存中的。
+
+`Stream pipeline` 的终止操作本质上也影响了并发执行的效率。如果大量的工作在终止操作中完成，而不是全部工作在 `pipeline` 中完成，并且这个操作是固有的顺序，那么并行 `pipeline` 的效率就会受到限制。并行的最佳终止操作是做减法（ reduction ），用一个 `Stream` 的 `reduce` 方法，将所有从 `pipeline` 产生的元素都合并在一起，或者预先打包像 `min`, `max` 、`count` 和 `sum` 这类方法。骤死式操作（ short-circuiting operation ）如 `anyMatch` 、`allMatch` 和 `noneMatch` 也都可以并行。由 `Stream` 的 `collect` 方法执行的操作，都是可变的减法，不是并行的最好选择，因为合并集合的成本非常高。
+
+如果是自己编写 `Stream` 、`Iterable` 或者 `Collection` 实现，并且想要得到适当的并行性能，就必须覆盖`spliterator` 方法，并广泛地测试结果Stream 的并行性能。编写高质量的分割迭代器很困难，并且超出了本书的讨论范畴。
+
+**并行 `Stream`不仅可能降低性能，包括活性失败，还可能导致结果出错，以及难以预计的行为**（如安全性失败） 。安全性失败可能是因为并行的 `pipeline` 使用了映射、过滤器或者程序员自己编写的其他函数对象，并且没有遵守它们的规范。`Stream` 规范对于这些函数对象有着严格的要求条件。例如，传到 `Stream` 的`reduce` 操作的收集器函数和组合器函数，必须是有关联、互不干扰，并且是无状态的。如果不满足这些条件（在第 46 条中提到了一些），但是按序列运行 `pipeline` ，可能会得到正确的结果；如果并发运行，则可能会突发性失败。
+
+以上值得注意的是，并行的梅森素数程序虽然运行完成了，但是并没有按正确的顺序（升序）打印出素数。为了保存序列化版本程序显示的顺序，必须用 `forEachOrdered` 代替终止操作的 `forEach` ，它可以确保按`encounter` 顺序遍历并行的 `Stream` 。
+
+假如在使用的是一个可以有效分割的源 `Stream` ，一个可并行的或者简单的终止操作，以及互不干扰的函数对象，那么将无法获得通过并行实现的提速，除非 `pipeline` 完成了足够的实际工作，抵消了与并行相关的成本。据不完全估计， `Stream` 中的元素数量，是每个元素所执行的代码行数的很多倍，至少是十万倍［ Lea 14 ］ 。
+
+切记：并行 `Stream` 是一项严格的性能优化。对于任何优化都必须在改变前后对性能进行测试，以确保值得这么做（详见第67 条） 。最理想的是在现实的系统设置中进行测试。一般来说，程序中所有的并行`Stream pipeline` 都是在一个通用的 `fork-join` 池中运行的。只要有一个 `pipeline` 运行异常，都会损害到系统中其他不相关部分的性能。
+
+听起来貌似在井行 `Stream pipeline` 时怪事连连，其实正是如此。我有个朋友，他发现在大量使用 `Stream` 的几百万行代码中，只有少数几个并行 `Stream` 是有效的。这并不意味着应该避免使用并行 `Stream` 。在适当的条件下，给`Stream pipeline` 添加 `parallel` 调用，确实可以在多处理器核的情况下实现近乎线性的倍增。某些域如机器学习和数据处理，尤其适用于这样的提速。
+
+简单举一个井行Stream pipeline 有效的例子。假设下面这个函数是用来计算  pi(n)，素数的数量少于或者等于n:
+
+```java
+// Prime-counting stream pipeline - benefits from parallelization
+static long pi(long n) {
+    return LongStream.rangeClosed(2, n)
+        .mapToObj(BigInteger::valueOf)
+        .filter(i -> i.isProbablePrime(50))
+        .count();
+}
+```
+
+在我的机器上，这个函数花 31 秒完成计算 pi(10<sup>8</sup>)。 只要添加一个 `parallel()` 调用，就把调用时间减少到了 9.2 秒:
+
+```java
+// Prime-counting stream pipeline - parallel version
+static long pi(long n) {
+    return LongStream.rangeClosed(2, n)
+        .paralle()
+        .mapToObj(BigInteger::valueOf)
+        .filter(i -> i.isProbalePrime(50))
+        .count();
+}
+```
+
+换句话说，并行计算在我的四核机器上添加了 `parallel()` 调用后，速度加快了3 . 7 倍。值得注意的是，这并不是在实践中计算 `n` 值很大时的 `τ(n)` 的方法。还有更加高效的算法，如著名的Lehmer 公式。
+
+如果要并行一个随机数的 `Stream` ，应该从 `SplittableRandom` 实例开始，而不是从`ThreadLocalRandom` （或实际上已经过时的Random ）开始。`SplittableRandom` 正是专门为此设计的，还有线性提速的可能。`ThreadLocalRandom` 则只用于单线程，它将自身当作一个并行的 `Stream` 源运用到函数中，但是没有`SplittableRandom` 那么快。`Random` 在每个操作上都进行同步，因此会导致滥用，扼杀了并行的优势。
+
+总而言之，尽量不要并行 `Stream pipeline` ，除非有足够的理由相信它能保证计算的正确性，并且能加快程序的运行速度。如果对 `Stream` 进行不恰当的并行操作，可能导致程序运行失败，或者造成性能灾难。如果确信并行是可行的，并发运行时一定要确保代码正确，并在真实环境下认真地进行性能测量。如果代码正确，这些实验也证明它有助于提升性能，只有这时候，才可以在编写代码时并行 `Stream` 。
